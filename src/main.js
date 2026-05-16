@@ -34,6 +34,7 @@ const userNameInput = document.getElementById("userName");
 const userEmailInput = document.getElementById("userEmail");
 const userPasswordInput = document.getElementById("userPassword");
 const userConfirmPasswordInput = document.getElementById("userConfirmPassword");
+const nameWrap = document.getElementById("nameWrap");
 const confirmWrap = document.getElementById("confirmWrap");
 const authMessageEl = document.getElementById("authMessage");
 const modeSignInBtn = document.getElementById("modeSignIn");
@@ -1780,13 +1781,12 @@ async function initAuth() {
 function setAuthMode(mode) {
   authMode = mode;
   const signUp = mode === "signup";
-  const nameLabel = document.querySelector("label[for='userName']");
   modeSignInBtn.classList.toggle("active", !signUp);
   modeSignUpBtn.classList.toggle("active", signUp);
-  confirmWrap.hidden = !signUp;
-  userConfirmPasswordInput.hidden = !signUp;
-  if (nameLabel) nameLabel.hidden = !signUp;
-  userNameInput.hidden = !signUp;
+  if (nameWrap) nameWrap.style.display = signUp ? "block" : "none";
+  confirmWrap.style.display = signUp ? "block" : "none";
+  userNameInput.style.display = signUp ? "block" : "none";
+  userConfirmPasswordInput.style.display = signUp ? "block" : "none";
   userNameInput.required = signUp;
   userConfirmPasswordInput.required = signUp;
   if (!signUp) {
