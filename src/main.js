@@ -1,13 +1,20 @@
 import * as THREE from "three";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/loaders/GLTFLoader.js";
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { experiments } from "./experiments.js";
+import { supabaseConfig } from "./supabase-config.js";
 
 const cameraEl = document.getElementById("camera");
 const canvas = document.getElementById("three-canvas");
 const labelsLayer = document.getElementById("labels-layer");
 const cursorEl = document.getElementById("cursor");
+const demoCursorEl = document.getElementById("demoCursor");
+if (demoCursorEl) demoCursorEl.textContent = "";
 const experimentSelect = document.getElementById("experimentSelect");
+const demoToggleBtn = document.getElementById("demoToggle");
+const demoStatusEl = document.getElementById("demoStatus");
+const doYourselfBtn = document.getElementById("doYourselfBtn");
 const stepTitleEl = document.getElementById("stepTitle");
 const stepDetailEl = document.getElementById("stepDetail");
 const targetLabelEl = document.getElementById("targetLabel");
@@ -25,6 +32,14 @@ const authOverlay = document.getElementById("authOverlay");
 const authForm = document.getElementById("authForm");
 const userNameInput = document.getElementById("userName");
 const userEmailInput = document.getElementById("userEmail");
+const userPasswordInput = document.getElementById("userPassword");
+const userConfirmPasswordInput = document.getElementById("userConfirmPassword");
+const confirmWrap = document.getElementById("confirmWrap");
+const authMessageEl = document.getElementById("authMessage");
+const modeSignInBtn = document.getElementById("modeSignIn");
+const modeSignUpBtn = document.getElementById("modeSignUp");
+const signOutBtn = document.getElementById("signOutBtn");
+const authSubmit = document.getElementById("authSubmit");
 
 const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -34,9 +49,16 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.01, 100);
 const cameraBase = { x: 0, y: 1.35, z: 2.05 };
 const cameraTarget = new THREE.Vector3(0, 0.15, 0);
+const cameraTargetBase = new THREE.Vector3(0, 0.15, 0);
+const cameraTargetDesired = new THREE.Vector3(0, 0.15, 0);
 let zoomLevel = 1.0;
+let reactionZoom = 1.0;
 function applyZoom() {
-  camera.position.set(cameraBase.x, cameraBase.y * zoomLevel, cameraBase.z * zoomLevel);
+  const effectiveZoom = zoomLevel * reactionZoom;
+  const desiredX = cameraBase.x + cameraTarget.x * 0.5;
+  const desiredY = cameraBase.y * effectiveZoom + (cameraTarget.y - cameraTargetBase.y) * 0.2;
+  const desiredZ = cameraBase.z * effectiveZoom + Math.abs(cameraTarget.z) * 0.12;
+  camera.position.set(desiredX, desiredY, desiredZ);
   camera.lookAt(cameraTarget);
 }
 applyZoom();
@@ -144,6 +166,33 @@ arrowGroup.add(arrowStem);
 arrowGroup.add(arrowHead);
 arrowGroup.visible = false;
 labRoot.add(arrowGroup);
+
+const placementOverlay = new THREE.Group();
+const placementRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.05, 0.085, 40),
+  new THREE.MeshBasicMaterial({
+    color: 0x9ce7ff,
+    transparent: true,
+    opacity: 0.58,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+);
+placementRing.rotation.x = -Math.PI / 2;
+const placementGlow = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.026, 0.026, 0.12, 20, 1, true),
+  new THREE.MeshBasicMaterial({
+    color: 0xb8eeff,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+  })
+);
+placementGlow.position.y = 0.04;
+placementOverlay.add(placementRing);
+placementOverlay.add(placementGlow);
+placementOverlay.visible = false;
+labRoot.add(placementOverlay);
 
 const WIKI_BY_KEY = {
   flame_test: "https://en.wikipedia.org/wiki/Flame_test",
@@ -316,7 +365,13 @@ const sim = {
   stageA: false,
   stageB: false,
   stirIntensity: 0,
+  stirPathScore: 0,
   beakerOnHotPlate: false,
+  burnerOn: false,
+  burnerHeat: 0,
+  burnerIdleTime: 0,
+  focusTool: null,
+  focusZoomTarget: 1.0,
   velocities: {},
   handTrackingEnabled: true,
   pinchMode: true,
@@ -326,6 +381,9 @@ const sim = {
 };
 sim.liquidTargetColor = new THREE.Color(0x60b8ff);
 let isSignedIn = false;
+let authMode = "signin";
+let releasePending = false;
+let releaseStartedAt = 0;
 
 const input = {
   active: false,
@@ -336,10 +394,116 @@ const input = {
   pinch: false,
   prevPinch: false,
 };
+const demo = {
+  active: false,
+  phase: "idle",
+  timer: 0,
+  count: 0,
+  pulse: 0,
+};
+let focusOrbitPhase = 0;
 let mouseDown = false;
 let grabbed = null;
 let handLandmarker = null;
 let lastVideoTime = -1;
+
+const PROFILE_BY_TEMPLATE = {
+  heat: {
+    liquidWobble: 0.009,
+    liquidSpin: 0.04,
+    liquidSpread: 0.022,
+    flameFlicker: 1.0,
+    flameLift: 1.0,
+    bubbleRise: 0.09,
+    bubbleOpacity: 0.32,
+    stirDecay: 0.86,
+    stirGain: 2.0,
+    stirThreshold: 0.044,
+    contactGain: 1.0,
+  },
+  stir_heat: {
+    liquidWobble: 0.014,
+    liquidSpin: 0.085,
+    liquidSpread: 0.04,
+    flameFlicker: 0.9,
+    flameLift: 0.95,
+    bubbleRise: 0.08,
+    bubbleOpacity: 0.28,
+    stirDecay: 0.62,
+    stirGain: 2.8,
+    stirThreshold: 0.036,
+    contactGain: 1.12,
+  },
+  dispense: {
+    liquidWobble: 0.007,
+    liquidSpin: 0.03,
+    liquidSpread: 0.018,
+    flameFlicker: 0.8,
+    flameLift: 0.8,
+    bubbleRise: 0.12,
+    bubbleOpacity: 0.44,
+    stirDecay: 0.88,
+    stirGain: 1.6,
+    stirThreshold: 0.046,
+    contactGain: 0.96,
+  },
+  measure: {
+    liquidWobble: 0.004,
+    liquidSpin: 0.015,
+    liquidSpread: 0.012,
+    flameFlicker: 0.8,
+    flameLift: 0.8,
+    bubbleRise: 0.06,
+    bubbleOpacity: 0.24,
+    stirDecay: 0.9,
+    stirGain: 1.5,
+    stirThreshold: 0.05,
+    contactGain: 0.95,
+  },
+  electrolysis: {
+    liquidWobble: 0.008,
+    liquidSpin: 0.038,
+    liquidSpread: 0.026,
+    flameFlicker: 0.85,
+    flameLift: 0.8,
+    bubbleRise: 0.14,
+    bubbleOpacity: 0.52,
+    stirDecay: 0.88,
+    stirGain: 1.5,
+    stirThreshold: 0.045,
+    contactGain: 1.05,
+  },
+  indicator: {
+    liquidWobble: 0.006,
+    liquidSpin: 0.02,
+    liquidSpread: 0.016,
+    flameFlicker: 0.8,
+    flameLift: 0.8,
+    bubbleRise: 0.09,
+    bubbleOpacity: 0.35,
+    stirDecay: 0.88,
+    stirGain: 1.4,
+    stirThreshold: 0.046,
+    contactGain: 0.96,
+  },
+};
+
+const PROFILE_OVERRIDES = {
+  flame_test: { flameFlicker: 1.2, flameLift: 1.1, contactGain: 1.2 },
+  iodine_clock: { bubbleRise: 0.16, bubbleOpacity: 0.55 },
+  briggs_rauscher: { liquidWobble: 0.017, liquidSpin: 0.12, liquidSpread: 0.05, stirGain: 3.0 },
+  silver_mirror: { contactGain: 1.15, liquidWobble: 0.005 },
+  electrolysis_water: { bubbleRise: 0.18, bubbleOpacity: 0.62, contactGain: 1.15 },
+  galvanic_cell: { bubbleRise: 0.11, bubbleOpacity: 0.4 },
+  red_cabbage_indicator: { liquidSpin: 0.028, liquidWobble: 0.007 },
+  crystal_growth: { liquidSpread: 0.046, stirGain: 2.9 },
+};
+
+function getReactionProfile(exp) {
+  const templateProfile = PROFILE_BY_TEMPLATE[exp.template] || PROFILE_BY_TEMPLATE.heat;
+  const override = PROFILE_OVERRIDES[exp.key] || {};
+  return { ...templateProfile, ...override };
+}
 
 function fallbackMesh(name) {
   const mat = new THREE.MeshStandardMaterial({ color: 0x8cb6de, roughness: 0.5 });
@@ -425,13 +589,14 @@ async function initAssets() {
   alignEffects();
 }
 
-function alignEffects() {
+function alignEffects(profile) {
+  const pfx = profile || PROFILE_BY_TEMPLATE.heat;
   if (objects.beaker) {
     const p = objects.beaker.position;
-    const wobble = Math.sin(performance.now() * 0.012) * 0.01 * sim.stirIntensity;
+    const wobble = Math.sin(performance.now() * 0.012) * pfx.liquidWobble * sim.stirIntensity;
     liquid.position.set(p.x, p.y + 0.055 + wobble, p.z);
-    liquid.rotation.y += 0.05 * sim.stirIntensity;
-    liquid.scale.set(1 + 0.02 * sim.stirIntensity, 1, 1 + 0.02 * sim.stirIntensity);
+    liquid.rotation.y += pfx.liquidSpin * sim.stirIntensity;
+    liquid.scale.set(1 + pfx.liquidSpread * sim.stirIntensity, 1, 1 + pfx.liquidSpread * sim.stirIntensity);
     bubbles.position.set(p.x, p.y + 0.02, p.z);
     crystals.position.set(p.x, p.y + 0.02, p.z);
   }
@@ -439,8 +604,13 @@ function alignEffects() {
     const p = objects.burner.position;
     const topOffset = objects.burner.userData.topOffset || 0.16;
     flame.position.set(p.x, p.y + topOffset * 0.94, p.z);
-    const flick = 0.9 + Math.abs(Math.sin(performance.now() * 0.02)) * 0.18;
-    flame.scale.set(0.95 + 0.05 * flick, flick, 0.95 + 0.05 * flick);
+    const flickerBase = 0.82 + Math.abs(Math.sin(performance.now() * 0.02 * pfx.flameFlicker)) * 0.24;
+    const flick = THREE.MathUtils.lerp(0.55, flickerBase, sim.burnerHeat);
+    flame.scale.set(
+      (0.9 + 0.07 * flick) * sim.burnerHeat,
+      flick * sim.burnerHeat * pfx.flameLift,
+      (0.9 + 0.07 * flick) * sim.burnerHeat
+    );
   }
 }
 
@@ -500,17 +670,17 @@ function getChemistryContext(exp) {
 function getDetailedExplanation(exp) {
   const byTemplate = {
     heat:
-      "At the particle level, heating increases average kinetic energy and raises collision frequency. As effective collisions increase, transformation rates rise and thermal transitions become observable in the vessel.",
+      "Heating gives tiny particles more energy, so they move faster and bump into each other more. More useful bumps means the reaction can happen sooner.",
     stir_heat:
-      "This setup couples heat transfer with convective mixing: stirring disrupts concentration gradients, improves solute transport, and accelerates approach to uniform reaction conditions inside the beaker.",
+      "Heat helps, but stirring spreads that heat everywhere. Think of mixing soup so every spoonful gets warm instead of only one hot spot.",
     dispense:
-      "Each dispense event represents a metered reagent addition. The simulator tracks cumulative stoichiometric progression, and visual response reflects pathway advancement after threshold additions.",
+      "Each drop is like adding one more ingredient spoon. The simulator counts those additions until there is enough to show the reaction result.",
     measure:
-      "Measurement mode models an instrument-contact phase where observables (temperature/conductivity trend) are sampled over time. Stable contact improves data reliability and convergence.",
+      "The tool must stay touching the liquid so it can read it properly. Quick touches are noisy; steady contact gives a better answer.",
     electrolysis:
-      "Electrolysis behavior is represented by controlled probe contact and staged setup. In real systems, electrode material, electrolyte concentration, and applied potential govern product distribution.",
+      "In real life this needs electricity and electrodes. Here, the setup step plus probe contact acts like turning the power path on so the effect can start.",
     indicator:
-      "Indicator experiments track acid/base-dependent structural shifts of dye species. As proton activity changes, chromophore state changes and drives visible wavelength-dependent color transitions.",
+      "Indicators are like color storytellers. Add acid or base, and the indicator molecule changes form, so the color changes too.",
   };
   return `${exp.explanation} ${byTemplate[exp.template] || ""}`.trim();
 }
@@ -564,6 +734,10 @@ function getAllowedToolSet() {
 }
 
 function updateCursor() {
+  if (demo.active) {
+    cursorEl.style.display = "none";
+    return;
+  }
   if (!input.active) {
     cursorEl.style.display = "none";
     return;
@@ -573,13 +747,192 @@ function updateCursor() {
   cursorEl.style.top = `${input.screenY}px`;
 }
 
+function worldToScreen(world) {
+  const projected = world.clone().project(camera);
+  return {
+    x: (projected.x * 0.5 + 0.5) * window.innerWidth,
+    y: (-projected.y * 0.5 + 0.5) * window.innerHeight,
+  };
+}
+
+function setDemoStatus(text) {
+  demoStatusEl.textContent = `Demo: ${text}`;
+}
+
+function stopDemo(resetText = true, hideDoYourself = true) {
+  demo.active = false;
+  demo.phase = "idle";
+  demo.timer = 0;
+  demo.count = 0;
+  demo.pulse = 0;
+  demoCursorEl.style.display = "none";
+  demoToggleBtn.classList.remove("active");
+  if (hideDoYourself) doYourselfBtn.hidden = true;
+  if (resetText) setDemoStatus("off");
+}
+
+function startDemo() {
+  if (!isSignedIn) {
+    setDemoStatus("sign in first");
+    return;
+  }
+  resetExperiment(sim.expIndex);
+  if (grabbed) releaseGrab();
+  demo.active = true;
+  demo.phase = "setup";
+  demo.timer = 0;
+  demo.count = 0;
+  demo.pulse = 0;
+  demoToggleBtn.classList.add("active");
+  doYourselfBtn.hidden = true;
+  setDemoStatus("running guided steps");
+}
+
+function moveToolDemo(key, target, speed, yBias = 0) {
+  const obj = objects[key];
+  if (!obj) return false;
+  const next = new THREE.Vector3(target.x, target.y + yBias, target.z);
+  obj.position.lerp(next, Math.min(1, speed));
+  return obj.position.distanceTo(next) < 0.03;
+}
+
+function showDemoCursorAtTool(key, lift = 0.08) {
+  const obj = objects[key];
+  if (!obj) return;
+  const world = obj.position.clone();
+  world.y += lift;
+  const p = worldToScreen(world);
+  demoCursorEl.style.display = "block";
+  demoCursorEl.style.left = `${p.x}px`;
+  demoCursorEl.style.top = `${p.y}px`;
+}
+
+function runDemo(dt) {
+  if (!demo.active || sim.success) {
+    if (demo.active && sim.success) {
+      if (demo.phase !== "done") {
+        demo.phase = "done";
+        setDemoStatus("off");
+        doYourselfBtn.hidden = false;
+        stopDemo(false, false);
+      }
+    }
+    return;
+  }
+  const demoSpeed = 0.55;
+  const exp = experiments[sim.expIndex];
+  const requiredTime = exp.requiredTime || 3.0;
+  const requiredCount = exp.requiredCount || 3;
+  const beakerPos = objects.beaker.position;
+  const burnerPos = objects.burner.position;
+  const hotPlatePos = objects.hotPlate.position;
+  const beakerTop = objects.beaker.position.y + Math.min(0.09, (objects.beaker.userData.topOffset || 0.12) * 0.7);
+  demo.timer += dt * demoSpeed;
+  demo.pulse += dt * demoSpeed;
+
+  if (exp.template === "heat") {
+    const heatKey = resolveToolKey(exp.primaryTool || "testTube");
+    const target = new THREE.Vector3(burnerPos.x + 0.02, burnerPos.y + (objects.burner.userData.topOffset || 0.16) * 0.94, burnerPos.z);
+    moveToolDemo(heatKey, target, 0.045);
+    sim.burnerOn = true;
+    sim.flameHeat += dt * 0.85;
+    showDemoCursorAtTool(heatKey, 0.11);
+    setDemoStatus("holding vessel at burner flame");
+    return;
+  }
+
+  if (exp.template === "stir_heat") {
+    if (demo.phase === "setup") {
+      const hotTop = objects.hotPlate.position.y + (objects.hotPlate.userData.topOffset || 0.08) + (objects.beaker.userData.baseLift || 0.04);
+      const placed = moveToolDemo("beaker", new THREE.Vector3(hotPlatePos.x, hotTop, hotPlatePos.z), 0.06);
+      showDemoCursorAtTool("beaker", 0.1);
+      setDemoStatus("placing beaker on hot plate");
+      if (placed) {
+        sim.beakerOnHotPlate = true;
+        demo.phase = "stir";
+        demo.timer = 0;
+      }
+      return;
+    }
+    const angle = demo.pulse * 2.5;
+    const r = 0.045;
+    const target = new THREE.Vector3(beakerPos.x + Math.cos(angle) * r, beakerTop - 0.06, beakerPos.z + Math.sin(angle) * r);
+    moveToolDemo("stirStick", target, 0.1);
+    sim.stirPathScore = Math.min(1.2, sim.stirPathScore + dt * 1.5);
+    sim.stirTime += dt * 0.75;
+    sim.stirIntensity = Math.min(1.2, sim.stirIntensity + dt * 1.6);
+    objects.stirStick.rotation.x = -1.2;
+    objects.stirStick.rotation.z = 0.2 + Math.sin(demo.pulse * 6) * 0.08;
+    showDemoCursorAtTool("stirStick", 0.1);
+    setDemoStatus("stirring in circular submerged motion");
+    return;
+  }
+
+  if (exp.template === "dispense") {
+    const tool = resolveToolKey(exp.primaryTool || "dropper");
+    const target = new THREE.Vector3(beakerPos.x + 0.01, beakerTop + 0.08, beakerPos.z + 0.01);
+    moveToolDemo(tool, target, 0.06);
+    showDemoCursorAtTool(tool, 0.09);
+    if (demo.timer > 1.2 && sim.dispenseCount < requiredCount) {
+      handleDispense(tool);
+      demo.timer = 0;
+    }
+    setDemoStatus(`dispensing reagent (${sim.dispenseCount}/${requiredCount})`);
+    return;
+  }
+
+  if (exp.template === "electrolysis") {
+    if (demo.phase === "setup") {
+      const targetClamp = new THREE.Vector3(beakerPos.x - 0.1, objects.ringClamp.position.y, beakerPos.z + 0.05);
+      const placed = moveToolDemo("ringClamp", targetClamp, 0.055);
+      showDemoCursorAtTool("ringClamp", 0.1);
+      setDemoStatus("positioning ring clamp");
+      if (placed) demo.phase = "probe";
+      return;
+    }
+    const targetProbe = new THREE.Vector3(beakerPos.x + 0.02, beakerTop - 0.03, beakerPos.z);
+    moveToolDemo("thermometer", targetProbe, 0.07);
+    sim.electroTime += dt * 0.8;
+    showDemoCursorAtTool("thermometer", 0.1);
+    setDemoStatus("holding probe contact");
+    return;
+  }
+
+  if (exp.template === "measure") {
+    const tool = resolveToolKey(exp.primaryTool || "thermometer");
+    const target = new THREE.Vector3(beakerPos.x + 0.015, beakerTop - 0.03, beakerPos.z + 0.01);
+    moveToolDemo(tool, target, 0.07);
+    sim.electroTime += dt * 0.78;
+    showDemoCursorAtTool(tool, 0.1);
+    setDemoStatus(`measuring contact (${Math.min(sim.electroTime, requiredTime).toFixed(1)}s)`);
+    return;
+  }
+
+  if (exp.template === "indicator") {
+    const tool = sim.stageA ? "pipet" : "dropper";
+    const target = new THREE.Vector3(beakerPos.x, beakerTop + 0.08, beakerPos.z);
+    moveToolDemo(tool, target, 0.06);
+    showDemoCursorAtTool(tool, 0.1);
+    if (demo.timer > 1.25) {
+      handleDispense(tool);
+      demo.timer = 0;
+    }
+    setDemoStatus(sim.stageA ? "adding base with pipet" : "adding acid with dropper");
+    return;
+  }
+
+  setDemoStatus("template not recognized");
+}
+
 function nearestGrabbable(localPoint) {
+  const preferred = activeTargetTool();
   let best = null;
   let bestD = Infinity;
-  for (const obj of Object.values(objects)) {
+  for (const [key, obj] of Object.entries(objects)) {
     if (!obj.userData.grabbable) continue;
     const d = obj.position.distanceTo(localPoint);
-    if (d < 0.24 && d < bestD) {
+    const assistRadius = key === preferred ? 0.42 : 0.32;
+    if (d < assistRadius && d < bestD) {
       bestD = d;
       best = obj;
     }
@@ -616,8 +969,22 @@ function resolveRigidPlacement(toolKey, desiredPos) {
   return result;
 }
 
+function autoDockTool(key, targetX, targetY, targetZ, snap, rotationX = null, rotationZ = null) {
+  if (!grabbed || grabbed.userData.name !== key) return null;
+  const nx = THREE.MathUtils.lerp(grabbed.position.x, targetX, snap);
+  const ny = THREE.MathUtils.lerp(grabbed.position.y, targetY, snap);
+  const nz = THREE.MathUtils.lerp(grabbed.position.z, targetZ, snap);
+  if (rotationX !== null) grabbed.rotation.x = THREE.MathUtils.lerp(grabbed.rotation.x, rotationX, snap);
+  if (rotationZ !== null) grabbed.rotation.z = THREE.MathUtils.lerp(grabbed.rotation.z, rotationZ, snap);
+  return new THREE.Vector3(nx, ny, nz);
+}
+
 function releaseGrab() {
   if (!grabbed) return;
+  if (grabbed.userData.name === "stirStick") {
+    grabbed.rotation.x = 0;
+    grabbed.rotation.z = 0;
+  }
   if (grabbed.userData.name === "beaker" && objects.hotPlate) {
     const hotTop = objects.hotPlate.position.y + (objects.hotPlate.userData.topOffset || 0.08);
     sim.beakerOnHotPlate =
@@ -695,6 +1062,42 @@ function updateArrow(nowMs) {
   arrowGroup.position.set(target.position.x, target.position.y + 0.18 + Math.sin(nowMs * 0.005) * 0.03, target.position.z);
 }
 
+function placementTargetForCurrentStep() {
+  const exp = experiments[sim.expIndex];
+  if (!exp || sim.success) return null;
+  if (exp.template === "heat") {
+    const heatKey = resolveToolKey(exp.primaryTool || "testTube");
+    const b = objects.burner;
+    if (!b) return null;
+    const burnerTop = b.position.y + (b.userData.topOffset || 0.16) * 0.94;
+    return { key: heatKey, position: new THREE.Vector3(b.position.x, burnerTop, b.position.z), ring: 0.055 };
+  }
+  if (exp.template === "stir_heat") {
+    if (!sim.beakerOnHotPlate) {
+      return { key: "beaker", position: objects.hotPlate.position.clone().setY(objects.hotPlate.position.y + 0.08), ring: 0.085 };
+    }
+    return { key: "stirStick", position: objects.beaker.position.clone().setY(objects.beaker.position.y + 0.01), ring: 0.06 };
+  }
+  if (exp.template === "dispense" || exp.template === "indicator" || exp.template === "measure" || exp.template === "electrolysis") {
+    return { key: activeTargetTool() || "beaker", position: objects.beaker.position.clone().setY(objects.beaker.position.y + 0.07), ring: 0.07 };
+  }
+  return null;
+}
+
+function updatePlacementOverlay(nowMs) {
+  const target = placementTargetForCurrentStep();
+  if (!target || !target.position) {
+    placementOverlay.visible = false;
+    return;
+  }
+  placementOverlay.visible = true;
+  placementOverlay.position.copy(target.position);
+  const pulse = 1.0 + Math.sin(nowMs * 0.006) * 0.3;
+  placementRing.scale.setScalar((target.ring || 0.06) / 0.055 * pulse);
+  placementGlow.scale.y = 1.0 + pulse * 0.45;
+  placementRing.material.opacity = 0.45 + Math.abs(Math.sin(nowMs * 0.006)) * 0.3;
+}
+
 function updateLabels() {
   const allowed = getAllowedToolSet();
   for (const [key, obj] of Object.entries(objects)) {
@@ -733,7 +1136,13 @@ function resetExperiment(index) {
   sim.stageA = false;
   sim.stageB = false;
   sim.stirIntensity = 0;
+  sim.stirPathScore = 0;
   sim.beakerOnHotPlate = false;
+  sim.burnerOn = false;
+  sim.burnerHeat = 0;
+  sim.burnerIdleTime = 0;
+  sim.focusTool = null;
+  sim.focusZoomTarget = 1.0;
   sim.velocities = {};
 
   liquid.material.color.setHex(0x60b8ff);
@@ -760,26 +1169,60 @@ function resetExperiment(index) {
 function runExperiment(dt) {
   if (sim.success) return;
   const exp = experiments[sim.expIndex];
-  alignEffects();
-  if (exp.template !== "heat") flame.visible = false;
+  const profile = getReactionProfile(exp);
+  alignEffects(profile);
+  sim.focusTool = null;
+  sim.focusZoomTarget = 1.0;
+  if (exp.template !== "heat") {
+    sim.burnerOn = false;
+    sim.burnerIdleTime = 0;
+  }
   if (exp.template !== "dispense" && exp.template !== "electrolysis") bubbles.visible = false;
   if (exp.template !== "stir_heat") crystals.visible = false;
-  sim.stirIntensity = Math.max(0, sim.stirIntensity - dt * 0.9);
+  sim.stirIntensity = Math.max(0, sim.stirIntensity - dt * profile.stirDecay);
+  sim.stirPathScore = Math.max(0, sim.stirPathScore - dt * 0.7);
+  sim.burnerHeat = THREE.MathUtils.lerp(sim.burnerHeat, sim.burnerOn ? 1 : 0, Math.min(1, dt * (sim.burnerOn ? 4.2 : 3.0)));
+  flame.visible = sim.burnerHeat > 0.06;
 
   if (exp.template === "heat") {
     const heatKey = resolveToolKey(exp.primaryTool || "testTube");
     const heatTool = objects[heatKey] || objects.testTube;
     const required = exp.requiredTime || 3.0;
-    if (dist(heatTool, objects.burner) < 0.28) {
-      sim.flameHeat += dt;
-      flame.visible = true;
-      setInstruction(exp.title, "Hold the target vessel at the burner flame.", heatKey, `Status: heating ${Math.min(sim.flameHeat, required).toFixed(1)}/${required.toFixed(1)}s`);
-      setLiquidTarget(0x7ab7ff);
+    const burnerTop = objects.burner.position.y + (objects.burner.userData.topOffset || 0.16) * 0.94;
+    const closeEnough2D = dist2D(heatTool.position, objects.burner.position) < 0.13;
+    const heightAligned = Math.abs(heatTool.position.y - burnerTop) < 0.12;
+    const activeHeatingContact = closeEnough2D && heightAligned;
+    if (activeHeatingContact) {
+      sim.burnerOn = true;
+      sim.burnerIdleTime = 0;
     } else {
-      sim.flameHeat = Math.max(0, sim.flameHeat - dt * 0.6);
-      flame.visible = false;
-      setInstruction(exp.title, "Move target vessel near burner.", heatKey, "Status: move tool near burner");
+      sim.burnerIdleTime += dt;
+      if (sim.burnerIdleTime > 1.1) sim.burnerOn = false;
+    }
+    if (sim.burnerHeat > 0.45 && activeHeatingContact) {
+      sim.flameHeat += dt * profile.contactGain;
+      setInstruction(
+        exp.title,
+        "Hold the vessel directly in the active flame zone.",
+        heatKey,
+        `Status: heating ${Math.min(sim.flameHeat, required).toFixed(1)}/${required.toFixed(1)}s`,
+        "Why: sustained flame contact raises kinetic energy and drives the thermal step."
+      );
+      setLiquidTarget(0x7ab7ff);
+      sim.focusTool = heatKey;
+      sim.focusZoomTarget = 0.66;
+    } else {
+      sim.flameHeat = Math.max(0, sim.flameHeat - dt * 0.58);
+      setInstruction(
+        exp.title,
+        "Align vessel tip with burner mouth to ignite and heat.",
+        heatKey,
+        "Status: position for ignition",
+        "Why: proximity alone is not enough; the active heating zone is at the burner mouth."
+      );
       setLiquidTarget(0x60b8ff);
+      sim.focusTool = "burner";
+      sim.focusZoomTarget = 0.74;
     }
     if (sim.flameHeat >= required) sim.success = true;
   }
@@ -796,20 +1239,40 @@ function runExperiment(dt) {
     const beakerTop = objects.beaker.position.y + Math.min(0.09, (objects.beaker.userData.topOffset || 0.12) * 0.7);
     const inLiquid =
       stickDist2D < 0.2 &&
-      objects.stirStick.position.y > objects.beaker.position.y - 0.005 &&
-      objects.stirStick.position.y < beakerTop - 0.01;
-    const stirring = inLiquid && stirVelocity > 0.035;
+      objects.stirStick.position.y > objects.beaker.position.y - 0.04 &&
+      objects.stirStick.position.y < beakerTop + 0.01;
+    const angularTrack = Math.abs(objects.stirStick.position.x - objects.beaker.position.x) + Math.abs(objects.stirStick.position.z - objects.beaker.position.z);
+    const stirring = inLiquid && stirVelocity > profile.stirThreshold && angularTrack > 0.028;
     if (!onPlate) {
-      setInstruction(exp.title, "Move beaker onto hot plate.", "beaker", "Status: place beaker on hot plate");
+      setInstruction(
+        exp.title,
+        "Move beaker onto hot plate.",
+        "beaker",
+        "Status: place beaker on hot plate",
+        "Why: plate contact provides the heat source before stirring can homogenize the solution."
+      );
       setLiquidTarget(0x60b8ff);
+      sim.focusTool = "hotPlate";
+      sim.focusZoomTarget = 0.76;
     } else if (!stirring) {
-      setInstruction(exp.title, "Insert stirring stick into liquid and move it.", "stirStick", "Status: stir in beaker");
+      setInstruction(
+        exp.title,
+        "Stir in circular motion while tip stays submerged.",
+        "stirStick",
+        "Status: build stable stirring pattern",
+        "Why: submerged circular motion improves convective mixing and heat transfer."
+      );
       setLiquidTarget(0x5aa7ee);
+      sim.focusTool = "beaker";
+      sim.focusZoomTarget = 0.64;
     } else {
-      sim.stirTime += dt;
-      sim.stirIntensity = Math.min(1.2, sim.stirIntensity + dt * 2.2);
-      setInstruction(exp.title, "Keep stirring to complete process.", "stirStick", `Status: stirring ${Math.min(sim.stirTime, required).toFixed(1)}/${required.toFixed(1)}s`);
+      sim.stirPathScore = Math.min(1.2, sim.stirPathScore + dt * profile.stirGain);
+      sim.stirTime += dt * Math.min(1.1, 0.55 + sim.stirPathScore);
+      sim.stirIntensity = Math.min(1.2, sim.stirIntensity + dt * profile.stirGain);
+      setInstruction(exp.title, "Keep circular stirring for homogeneous heating.", "stirStick", `Status: stirring quality ${(Math.min(sim.stirPathScore, 1) * 100).toFixed(0)}% | time ${Math.min(sim.stirTime, required).toFixed(1)}/${required.toFixed(1)}s`);
       setLiquidTarget(0x4a86d8);
+      sim.focusTool = "beaker";
+      sim.focusZoomTarget = 0.58;
     }
     crystals.visible = sim.stirTime > Math.max(1.4, required * 0.55);
     if (sim.stirTime >= required) sim.success = true;
@@ -821,11 +1284,19 @@ function runExperiment(dt) {
     bubbles.visible = sim.dispenseCount > 0;
     const t = performance.now();
     bubbles.children.forEach((b, i) => {
-      b.position.y = 0.02 + ((t * 0.00025 + i * 0.04) % 0.1);
-      b.material.opacity = 0.28 + 0.4 * (0.7 + 0.3 * Math.sin(t * 0.012));
+      b.position.y = 0.02 + ((t * (0.0002 + profile.bubbleRise * 0.0007) + i * 0.04) % 0.1);
+      b.material.opacity = profile.bubbleOpacity + 0.34 * (0.7 + 0.3 * Math.sin(t * 0.012));
     });
-    setInstruction(exp.title, "Release target tool above beaker repeatedly.", targetTool, `Status: dispensed ${sim.dispenseCount}/${required}`);
+    setInstruction(
+      exp.title,
+      "Release target tool above beaker repeatedly.",
+      targetTool,
+      `Status: dispensed ${sim.dispenseCount}/${required}`,
+      "Why: each release is a metered reagent addition used to model stoichiometric progression."
+    );
     setLiquidTarget(0x77c5ff);
+    sim.focusTool = "beaker";
+    sim.focusZoomTarget = 0.68;
     if (sim.dispenseCount >= required) sim.success = true;
   }
 
@@ -834,7 +1305,13 @@ function runExperiment(dt) {
     const clampPlaced = dist(objects.ringClamp, objects.beaker) < 0.28;
     const probeTouching = dist(objects.thermometer, objects.beaker) < 0.2;
     if (!clampPlaced) {
-      setInstruction(exp.title, "Move ring clamp next to beaker.", "ringClamp", "Status: place ring clamp");
+      setInstruction(
+        exp.title,
+        "Move ring clamp next to beaker.",
+        "ringClamp",
+        "Status: place ring clamp",
+        "Why: in this simulator the clamp marks the electrode-fixture setup stage before current is applied."
+      );
       setLiquidTarget(0x60b8ff);
       sim.electroTime = Math.max(0, sim.electroTime - dt * 0.15);
     } else if (!probeTouching) {
@@ -842,15 +1319,24 @@ function runExperiment(dt) {
         exp.title,
         "Touch beaker with thermometer (simulation probe acting as electrode control).",
         "thermometer",
-        "Status: touch beaker with simulation probe"
+        "Status: touch beaker with simulation probe",
+        "Why: probe contact is the virtual current-on trigger for electrolysis behavior."
       );
       setLiquidTarget(0x60b8ff);
       sim.electroTime = Math.max(0, sim.electroTime - dt * 0.15);
     } else {
-      sim.electroTime += dt;
+      sim.electroTime += dt * profile.contactGain;
       bubbles.visible = true;
-      setInstruction(exp.title, "Keep contact to simulate current flow.", "thermometer", `Status: current applied ${Math.min(sim.electroTime, required).toFixed(1)}/${required.toFixed(1)}s`);
+      setInstruction(
+        exp.title,
+        "Keep contact to simulate current flow.",
+        "thermometer",
+        `Status: current applied ${Math.min(sim.electroTime, required).toFixed(1)}/${required.toFixed(1)}s`,
+        "Why: sustained contact models continued current flow and gas evolution."
+      );
       setLiquidTarget(0x8ad6ff);
+      sim.focusTool = "beaker";
+      sim.focusZoomTarget = 0.66;
     }
     if (sim.electroTime >= required) sim.success = true;
   }
@@ -860,9 +1346,17 @@ function runExperiment(dt) {
     const measureKey = resolveToolKey(exp.primaryTool || "thermometer");
     const measureTool = objects[measureKey] || objects.thermometer;
     if (dist(measureTool, objects.beaker) < 0.2) {
-      sim.electroTime += dt;
-      setInstruction(exp.title, "Keep sensor contact with beaker.", measureKey, `Status: measuring ${Math.min(sim.electroTime, required).toFixed(1)}/${required.toFixed(1)}s`);
+      sim.electroTime += dt * profile.contactGain;
+      setInstruction(
+        exp.title,
+        "Keep sensor contact with beaker.",
+        measureKey,
+        `Status: measuring ${Math.min(sim.electroTime, required).toFixed(1)}/${required.toFixed(1)}s`,
+        "Why: stable sensor contact improves the reliability of the sampled value."
+      );
       setLiquidTarget(0x86c8ff);
+      sim.focusTool = "beaker";
+      sim.focusZoomTarget = 0.7;
     } else {
       sim.electroTime = Math.max(0, sim.electroTime - dt * 0.18);
       setInstruction(exp.title, "Touch beaker with measurement tool.", measureKey, "Status: move tool to beaker");
@@ -880,6 +1374,8 @@ function runExperiment(dt) {
       setLiquidTarget(0xff6ba8);
     }
     if (sim.stageA && sim.stageB) sim.success = true;
+    sim.focusTool = "beaker";
+    sim.focusZoomTarget = 0.68;
   }
 
   if (sim.success) {
@@ -891,7 +1387,19 @@ function runExperiment(dt) {
       experiments[sim.expIndex].explanation
     );
     setLiquidTarget(0x74db86);
+    sim.focusTool = "beaker";
+    sim.focusZoomTarget = 0.72;
   }
+}
+
+function updateReactionCamera(dt) {
+  cameraTarget.copy(cameraTargetBase);
+  reactionZoom = 1.0;
+  if (!sim.rotateMode) {
+    labRoot.rotation.y = THREE.MathUtils.lerp(labRoot.rotation.y, 0, Math.min(1, dt * 6.2));
+    labRoot.rotation.x = THREE.MathUtils.lerp(labRoot.rotation.x, 0, Math.min(1, dt * 6.2));
+  }
+  applyZoom();
 }
 
 function updateHandInput() {
@@ -941,6 +1449,12 @@ function setInteractionMode(mode) {
 }
 
 function updateManipulation() {
+  if (demo.active) {
+    if (grabbed) releaseGrab();
+    input.prevPinch = input.pinch;
+    updateCursor();
+    return;
+  }
   if (!isSignedIn) {
     if (grabbed) releaseGrab();
     input.prevPinch = input.pinch;
@@ -986,11 +1500,25 @@ function updateManipulation() {
   const world = screenToTablePoint(input.screenX, input.screenY);
   const local = labRoot.worldToLocal(world.clone());
   if (!input.prevPinch && input.pinch) {
-    const candidate = nearestGrabbable(local);
+    releasePending = false;
+    const candidate = grabbed || nearestGrabbable(local);
     const allowed = getAllowedToolSet();
     grabbed = candidate && allowed.has(candidate.userData.name) ? candidate : null;
   } else if (input.prevPinch && !input.pinch) {
-    releaseGrab();
+    releasePending = true;
+    releaseStartedAt = performance.now();
+  }
+
+  if (releasePending && !input.pinch && grabbed) {
+    const heldKey = grabbed.userData.name;
+    const graceMs = heldKey === "stirStick" ? 520 : 320;
+    if (performance.now() - releaseStartedAt > graceMs) {
+      releaseGrab();
+      releasePending = false;
+    }
+  }
+  if (input.pinch && releasePending) {
+    releasePending = false;
   }
 
   if (grabbed && input.pinch) {
@@ -1017,15 +1545,46 @@ function updateManipulation() {
       }
     }
 
+    if (key === "beaker" && objects.burner) {
+      const dBurner = dist2D({ x: rigid.x, z: rigid.z }, objects.burner.position);
+      if (dBurner < 0.36) {
+        const snap = smoothstep(0.36, 0.04, dBurner) * 0.92;
+        const burnerTop = objects.burner.position.y + (objects.burner.userData.topOffset || 0.16) + 0.035;
+        const docked = autoDockTool("beaker", objects.burner.position.x, burnerTop, objects.burner.position.z, snap, 0.03, 0);
+        if (docked) {
+          targetX = docked.x;
+          targetZ = docked.z;
+          y = docked.y;
+        }
+      }
+    }
+
     if (key === "stirStick" && objects.beaker) {
-      const nearBeaker = dist2D({ x: targetX, z: targetZ }, objects.beaker.position) < 0.28;
+      const exp = experiments[sim.expIndex];
+      const stirringStage = exp && exp.template === "stir_heat";
+      const snapRadius = stirringStage ? 0.52 : 0.3;
+      const nearBeaker = dist2D({ x: targetX, z: targetZ }, objects.beaker.position) < snapRadius;
       if (nearBeaker) {
-        const d = dist2D({ x: targetX, z: targetZ }, objects.beaker.position);
-        const blend = smoothstep(0.28, 0.02, d);
-        targetX = THREE.MathUtils.lerp(targetX, objects.beaker.position.x, blend * 0.78);
-        targetZ = THREE.MathUtils.lerp(targetZ, objects.beaker.position.z, blend * 0.78);
-        y = objects.beaker.position.y + 0.022;
+        const bx = objects.beaker.position.x;
+        const bz = objects.beaker.position.z;
+        const dx = targetX - bx;
+        const dz = targetZ - bz;
+        const angle = Math.atan2(dz, dx);
+        const radial = Math.sqrt(dx * dx + dz * dz);
+        const radius = stirringStage
+          ? Math.max(0.02, Math.min(0.055, radial * 0.45))
+          : Math.max(0.035, Math.min(0.075, radial));
+        targetX = bx + Math.cos(angle) * radius;
+        targetZ = bz + Math.sin(angle) * radius;
+        const beakerTop = objects.beaker.position.y + Math.min(0.09, (objects.beaker.userData.topOffset || 0.12) * 0.7);
+        const beakerBottom = objects.beaker.position.y - 0.03;
+        y = stirringStage ? beakerBottom + 0.012 : beakerTop - 0.03;
         sim.stirIntensity = Math.min(1.2, sim.stirIntensity + 0.02);
+        grabbed.rotation.x = -1.2;
+        grabbed.rotation.z = 0.25 + Math.sin(performance.now() * 0.01) * 0.05;
+      } else {
+        grabbed.rotation.x = 0;
+        grabbed.rotation.z = 0;
       }
     }
 
@@ -1034,7 +1593,53 @@ function updateManipulation() {
       if (nearBeaker) y = objects.beaker.position.y + (objects.beaker.userData.topOffset || 0.12) * 0.5;
     }
 
-    grabbed.position.lerp(new THREE.Vector3(targetX, y, targetZ), 0.28);
+    if (key === "testTube") {
+      const exp = experiments[sim.expIndex];
+      if (exp && exp.template === "heat" && objects.burner) {
+        const d = dist2D({ x: targetX, z: targetZ }, objects.burner.position);
+        if (d < 0.28) {
+          const snap = smoothstep(0.28, 0.03, d);
+          targetX = THREE.MathUtils.lerp(targetX, objects.burner.position.x, snap * 0.92);
+          targetZ = THREE.MathUtils.lerp(targetZ, objects.burner.position.z, snap * 0.92);
+          const burnerTop = objects.burner.position.y + (objects.burner.userData.topOffset || 0.16) * 0.94;
+          y = THREE.MathUtils.lerp(y, burnerTop, snap * 0.88);
+          grabbed.rotation.x = -1.15;
+        } else {
+          grabbed.rotation.x = 0;
+        }
+      }
+    }
+
+    if (key === "thermometer" && objects.hotPlate) {
+      const dHot = dist2D({ x: targetX, z: targetZ }, objects.hotPlate.position);
+      if (dHot < 0.24) {
+        const snap = smoothstep(0.24, 0.03, dHot) * 0.88;
+        const hotTop = objects.hotPlate.position.y + (objects.hotPlate.userData.topOffset || 0.08) + 0.03;
+        const docked = autoDockTool("thermometer", objects.hotPlate.position.x + 0.03, hotTop, objects.hotPlate.position.z, snap, -0.95, 0.06);
+        if (docked) {
+          targetX = docked.x;
+          targetZ = docked.z;
+          y = docked.y;
+        }
+      }
+    }
+
+    if ((key === "dropper" || key === "pipet" || key === "burette") && objects.beaker) {
+      const dBeaker = dist2D({ x: targetX, z: targetZ }, objects.beaker.position);
+      if (dBeaker < 0.34) {
+        const snap = smoothstep(0.34, 0.04, dBeaker) * 0.82;
+        const beakerTop = objects.beaker.position.y + (objects.beaker.userData.topOffset || 0.12) + 0.05;
+        const docked = autoDockTool(key, objects.beaker.position.x, beakerTop, objects.beaker.position.z, snap, -0.75, 0.02);
+        if (docked) {
+          targetX = docked.x;
+          targetZ = docked.z;
+          y = docked.y;
+        }
+      }
+    }
+
+    const follow = key === "stirStick" ? 0.48 : 0.28;
+    grabbed.position.lerp(new THREE.Vector3(targetX, y, targetZ), follow);
   }
 
   input.prevPinch = input.pinch;
@@ -1083,10 +1688,12 @@ zoomOutBtn.addEventListener("click", () => {
 });
 
 window.addEventListener("keydown", (e) => {
+  if (demo.active) return;
   if (e.code === "Space" && grabbed) handleDispense(grabbed.userData.name);
 });
 
 window.addEventListener("mousedown", (e) => {
+  if (demo.active) return;
   if (e.button !== 0) return;
   mouseDown = true;
   input.active = true;
@@ -1098,6 +1705,7 @@ window.addEventListener("mousedown", (e) => {
 });
 
 window.addEventListener("mousemove", (e) => {
+  if (demo.active) return;
   if (!mouseDown) return;
   input.active = true;
   input.prevScreenX = input.screenX;
@@ -1108,6 +1716,7 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("mouseup", (e) => {
+  if (demo.active) return;
   if (e.button !== 0) return;
   mouseDown = false;
   input.prevScreenX = input.screenX;
@@ -1127,35 +1736,125 @@ for (const [i, exp] of experiments.entries()) {
   opt.textContent = exp.title;
   experimentSelect.appendChild(opt);
 }
-experimentSelect.addEventListener("change", () => resetExperiment(Number(experimentSelect.value)));
-
-function initAuth() {
-  try {
-    const saved = localStorage.getItem("valab_user");
-    if (saved) {
-      isSignedIn = true;
-      authOverlay.classList.add("hidden");
-      return;
-    }
-  } catch (err) {
-    // no-op if storage is unavailable
+experimentSelect.addEventListener("change", () => {
+  if (demo.active) stopDemo();
+  resetExperiment(Number(experimentSelect.value));
+});
+demoToggleBtn.addEventListener("click", () => {
+  if (demo.active) {
+    stopDemo();
+  } else {
+    startDemo();
   }
-  isSignedIn = false;
-  authOverlay.classList.remove("hidden");
+});
+doYourselfBtn.addEventListener("click", () => {
+  doYourselfBtn.hidden = true;
+  resetExperiment(sim.expIndex);
+  setDemoStatus("off");
+});
+
+const hasSupabaseConfig = Boolean(supabaseConfig?.url && supabaseConfig?.anonKey);
+const supabase = hasSupabaseConfig ? createClient(supabaseConfig.url, supabaseConfig.anonKey) : null;
+
+async function initAuth() {
+  if (!supabase) {
+    isSignedIn = false;
+    signOutBtn.hidden = true;
+    authOverlay.classList.remove("hidden");
+    authMessageEl.textContent = "Auth is not configured. Add Supabase URL and anon key in src/supabase-config.js.";
+    return;
+  }
+
+  const { data, error } = await supabase.auth.getSession();
+  if (!error && data?.session) {
+    isSignedIn = true;
+    signOutBtn.hidden = false;
+    authOverlay.classList.add("hidden");
+  } else {
+    isSignedIn = false;
+    signOutBtn.hidden = true;
+    authOverlay.classList.remove("hidden");
+  }
 }
 
-authForm.addEventListener("submit", (e) => {
+function setAuthMode(mode) {
+  authMode = mode;
+  const signUp = mode === "signup";
+  modeSignInBtn.classList.toggle("active", !signUp);
+  modeSignUpBtn.classList.toggle("active", signUp);
+  confirmWrap.hidden = !signUp;
+  userConfirmPasswordInput.hidden = !signUp;
+  userNameInput.required = signUp;
+  userConfirmPasswordInput.required = signUp;
+  authMessageEl.textContent = "";
+  authSubmit.textContent = signUp ? "Create account" : "Sign in";
+}
+
+authForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const name = userNameInput.value.trim();
-  const email = userEmailInput.value.trim();
-  if (!name || !email) return;
-  try {
-    localStorage.setItem("valab_user", JSON.stringify({ name, email, signedAt: new Date().toISOString() }));
-  } catch (err) {
-    // no-op
+  if (!supabase) {
+    authMessageEl.textContent = "Auth is not configured. Add Supabase credentials first.";
+    return;
   }
+  const name = userNameInput.value.trim();
+  const email = userEmailInput.value.trim().toLowerCase();
+  const password = userPasswordInput.value;
+  const confirm = userConfirmPasswordInput.value;
+  if (!email || !password) return;
+  if (password.length < 8) {
+    authMessageEl.textContent = "Password must be at least 8 characters.";
+    return;
+  }
+
+  if (authMode === "signup") {
+    if (!name) {
+      authMessageEl.textContent = "Name is required for sign up.";
+      return;
+    }
+    if (password !== confirm) {
+      authMessageEl.textContent = "Passwords do not match.";
+      return;
+    }
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: name },
+      },
+    });
+    if (error) {
+      authMessageEl.textContent = error.message || "Sign up failed.";
+      return;
+    }
+    authMessageEl.textContent = "Account created. Check your email if confirmation is required, then sign in.";
+    setAuthMode("signin");
+    userPasswordInput.value = "";
+    userConfirmPasswordInput.value = "";
+    return;
+  } else {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      authMessageEl.textContent = error.message || "Sign in failed.";
+      return;
+    }
+  }
+
   isSignedIn = true;
+  signOutBtn.hidden = false;
   authOverlay.classList.add("hidden");
+  authMessageEl.textContent = "";
+});
+
+modeSignInBtn.addEventListener("click", () => setAuthMode("signin"));
+modeSignUpBtn.addEventListener("click", () => setAuthMode("signup"));
+signOutBtn.addEventListener("click", async () => {
+  if (supabase) await supabase.auth.signOut();
+  isSignedIn = false;
+  signOutBtn.hidden = true;
+  authOverlay.classList.remove("hidden");
+  setAuthMode("signin");
+  userPasswordInput.value = "";
+  userConfirmPasswordInput.value = "";
 });
 
 function onResize() {
@@ -1171,10 +1870,13 @@ function loop(now) {
   last = now;
   updateHandInput();
   updateManipulation();
+  runDemo(dt);
   alignEffects();
   runExperiment(dt);
+  updateReactionCamera(dt);
   liquid.material.color.lerp(sim.liquidTargetColor, Math.min(1, dt * 4.5));
   updateArrow(now);
+  updatePlacementOverlay(now);
   updateLabels();
   renderInstruction();
   renderer.render(scene, camera);
@@ -1184,5 +1886,6 @@ function loop(now) {
 await initAssets();
 await initCameraAndCV();
 resetExperiment(0);
+setAuthMode("signin");
 initAuth();
 requestAnimationFrame(loop);
