@@ -136,6 +136,32 @@ http://localhost:8080
 
 ---
 
+## Production Auth Setup (Supabase)
+
+This project now uses hosted email/password auth with Supabase for real multi-user sign-in.
+
+1. Create a Supabase project.
+2. In Supabase dashboard, open `Authentication` and enable `Email` provider.
+3. Copy your:
+   - Project URL (`https://<project-ref>.supabase.co`)
+   - Anon public key (`Project Settings -> API`)
+4. Edit [src/supabase-config.js](./src/supabase-config.js):
+
+```js
+export const supabaseConfig = {
+  url: "https://YOUR_PROJECT.supabase.co",
+  anonKey: "YOUR_SUPABASE_ANON_KEY",
+};
+```
+
+5. Optional but recommended:
+   - Configure email templates and SMTP for reliable verification emails.
+   - Set your site URL and redirect URLs in Supabase Auth settings for deployed domains.
+
+If `src/supabase-config.js` is left empty, the app will show an auth configuration message and keep the sign-in overlay open.
+
+---
+
 ## Controls
 
 ### Gesture Controls (Webcam Required)
