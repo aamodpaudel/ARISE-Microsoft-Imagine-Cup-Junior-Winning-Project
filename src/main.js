@@ -1404,6 +1404,7 @@ function updateReactionCamera(dt) {
 }
 
 function updateHandInput() {
+  if (!isSignedIn) return;
   if (!sim.handTrackingEnabled || !handLandmarker) return;
   if (cameraEl.readyState < 2) return;
   if (cameraEl.currentTime === lastVideoTime) return;
@@ -1650,7 +1651,7 @@ function updateManipulation() {
 async function initCameraAndCV() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+      video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" },
       audio: false,
     });
     cameraEl.srcObject = stream;
@@ -1895,9 +1896,9 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+setAuthMode("signin");
 await initAssets();
 await initCameraAndCV();
 resetExperiment(0);
-setAuthMode("signin");
-initAuth();
+await initAuth();
 requestAnimationFrame(loop);
