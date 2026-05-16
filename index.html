@@ -12,6 +12,7 @@
   <div id="labels-layer"></div>
 
   <div id="cursor"></div>
+  <div id="demoCursor" aria-hidden="true"></div>
   <header id="topbar">
     <button id="cvToggle" class="top-btn">Pinch: ON</button>
     <button id="rotateToggle" class="top-btn">Hand Rotate: OFF</button>
@@ -23,11 +24,17 @@
   </header>
 
   <aside id="hud">
-    <h1>Virtual AI Chemistry Lab</h1>
+    <h1>ARISE: Virutal Chemistry lab</h1>
     <p class="sub">Experiments 1 to 50 | Gesture + CV + 3D</p>
+    <button id="signOutBtn" type="button" hidden>Sign out</button>
 
     <label for="experimentSelect">Experiment</label>
     <select id="experimentSelect"></select>
+    <div id="demoRow">
+      <button id="demoToggle" type="button" aria-label="Run guided demo">Demo</button>
+      <p id="demoStatus">Demo: off</p>
+      <button id="doYourselfBtn" type="button" hidden>Do yourself</button>
+    </div>
 
     <details class="panel accordion">
       <summary>Controls</summary>
@@ -67,13 +74,22 @@
 
   <div id="authOverlay">
     <div id="authCard">
-      <h2>Sign In</h2>
-      <p>Frontend-only login for now. Backend auth will be integrated later.</p>
+      <h2>Welcome to ARISE</h2>
+      <p>Create an account or sign in to save your lab access on this device.</p>
+      <div id="authModeRow">
+        <button id="modeSignIn" type="button" class="auth-mode active">Sign in</button>
+        <button id="modeSignUp" type="button" class="auth-mode">Sign up</button>
+      </div>
       <form id="authForm">
         <label for="userName">Name</label>
-        <input id="userName" type="text" required placeholder="Your name" />
+        <input id="userName" type="text" placeholder="Your name" />
         <label for="userEmail">Email</label>
         <input id="userEmail" type="email" required placeholder="you@example.com" />
+        <label for="userPassword">Password</label>
+        <input id="userPassword" type="password" required minlength="8" placeholder="At least 8 characters" />
+        <label id="confirmWrap" for="userConfirmPassword" hidden>Confirm Password</label>
+        <input id="userConfirmPassword" type="password" minlength="8" placeholder="Re-enter password" hidden />
+        <p id="authMessage" aria-live="polite"></p>
         <button id="authSubmit" type="submit">Enter Lab</button>
       </form>
     </div>
