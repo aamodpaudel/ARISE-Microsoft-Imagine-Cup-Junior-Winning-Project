@@ -1780,12 +1780,19 @@ async function initAuth() {
 function setAuthMode(mode) {
   authMode = mode;
   const signUp = mode === "signup";
+  const nameLabel = document.querySelector("label[for='userName']");
   modeSignInBtn.classList.toggle("active", !signUp);
   modeSignUpBtn.classList.toggle("active", signUp);
   confirmWrap.hidden = !signUp;
   userConfirmPasswordInput.hidden = !signUp;
+  if (nameLabel) nameLabel.hidden = !signUp;
+  userNameInput.hidden = !signUp;
   userNameInput.required = signUp;
   userConfirmPasswordInput.required = signUp;
+  if (!signUp) {
+    userConfirmPasswordInput.value = "";
+    userNameInput.value = "";
+  }
   authMessageEl.textContent = "";
   authSubmit.textContent = signUp ? "Create account" : "Sign in";
 }
@@ -1806,37 +1813,42 @@ authForm.addEventListener("submit", async (e) => {
     return;
   }
 
-  if (authMode === "signup") {
-    if (!name) {
-      authMessageEl.textContent = "Name is required for sign up.";
+  try {
+    if (authMode === "signup") {
+      if (!name) {
+        authMessageEl.textContent = "Name is required for sign up.";
+        return;
+      }
+      if (password !== confirm) {
+        authMessageEl.textContent = "Passwords do not match.";
+        return;
+      }
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: name },
+        },
+      });
+      if (error) {
+        authMessageEl.textContent = error.message || "Sign up failed.";
+        return;
+      }
+      authMessageEl.textContent = "Account created. Check your email for verification, then sign in.";
+      setAuthMode("signin");
+      userPasswordInput.value = "";
+      userConfirmPasswordInput.value = "";
       return;
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        authMessageEl.textContent = error.message || "Sign in failed.";
+        return;
+      }
     }
-    if (password !== confirm) {
-      authMessageEl.textContent = "Passwords do not match.";
-      return;
-    }
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: name },
-      },
-    });
-    if (error) {
-      authMessageEl.textContent = error.message || "Sign up failed.";
-      return;
-    }
-    authMessageEl.textContent = "Account created. Check your email if confirmation is required, then sign in.";
-    setAuthMode("signin");
-    userPasswordInput.value = "";
-    userConfirmPasswordInput.value = "";
+  } catch (err) {
+    authMessageEl.textContent = err?.message || JSON.stringify(err) || "Authentication failed.";
     return;
-  } else {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      authMessageEl.textContent = error.message || "Sign in failed.";
-      return;
-    }
   }
 
   isSignedIn = true;
