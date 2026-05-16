@@ -29,6 +29,7 @@ const handsOffToggleBtn = document.getElementById("handsOffToggle");
 const zoomOutBtn = document.getElementById("zoomOut");
 const zoomInBtn = document.getElementById("zoomIn");
 const authOverlay = document.getElementById("authOverlay");
+const authCard = document.getElementById("authCard");
 const authForm = document.getElementById("authForm");
 const userNameInput = document.getElementById("userName");
 const userEmailInput = document.getElementById("userEmail");
@@ -1782,6 +1783,7 @@ async function initAuth() {
 function setAuthMode(mode) {
   authMode = mode;
   const signUp = mode === "signup";
+  if (authCard) authCard.dataset.mode = signUp ? "signup" : "signin";
   modeSignInBtn.classList.toggle("active", !signUp);
   modeSignUpBtn.classList.toggle("active", signUp);
   if (nameWrap) nameWrap.style.display = signUp ? "block" : "none";

@@ -477,6 +477,22 @@ select {
   font-size: 0.84rem;
 }
 
+/* Default: sign-in mode hides sign-up-only fields even before JS finishes. */
+#authCard #nameWrap,
+#authCard #userName,
+#authCard #confirmWrap,
+#authCard #userConfirmPassword {
+  display: none;
+}
+
+/* In sign-up mode, show additional fields. */
+#authCard[data-mode="signup"] #nameWrap,
+#authCard[data-mode="signup"] #userName,
+#authCard[data-mode="signup"] #confirmWrap,
+#authCard[data-mode="signup"] #userConfirmPassword {
+  display: block;
+}
+
 .equip-label {
   position: absolute;
   border: 1px solid rgba(120, 188, 255, 0.5);
