@@ -133,6 +133,16 @@ h1 {
   font-size: 0.9rem;
 }
 
+#signOutBtn {
+  margin-top: 8px;
+  border: 1px solid #4e7ea8;
+  background: #153650;
+  color: #eaf5ff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
 label {
   display: block;
   margin-top: 12px;
@@ -146,6 +156,52 @@ select {
   border: 1px solid #396084;
   border-radius: 8px;
   padding: 8px;
+}
+
+#demoRow {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+#demoToggle {
+  border: 1px solid #7fa8ca;
+  background: #1f3f5e;
+  color: #eef7ff;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#demoToggle.active {
+  border-color: #ffd26a;
+  box-shadow: 0 0 0 1px rgba(255, 210, 106, 0.55) inset;
+  background: #3b4a26;
+}
+
+#demoStatus {
+  margin: 0;
+  color: #b9dcff;
+  font-size: 0.84rem;
+  min-width: 64px;
+  line-height: 1.2;
+}
+
+#doYourselfBtn {
+  border: 1px solid #7cc9a1;
+  background: #1b4b39;
+  color: #ecfff5;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .panel {
@@ -319,6 +375,21 @@ select {
   z-index: 20;
 }
 
+#demoCursor {
+  position: fixed;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  display: none;
+  z-index: 25;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 11V5a1 1 0 1 1 2 0v5'/%3E%3Cpath d='M11 10V4a1 1 0 1 1 2 0v6'/%3E%3Cpath d='M14 10V5a1 1 0 1 1 2 0v6'/%3E%3Cpath d='M17 11V7a1 1 0 1 1 2 0v7c0 3.3-2.7 6-6 6h-1.2a5.8 5.8 0 0 1-4.1-1.7L5 15.6a1.2 1.2 0 0 1 1.7-1.7L8 15v-4'/%3E%3C/svg%3E");
+  filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.45)) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
+}
+
 #authOverlay {
   position: fixed;
   inset: 0;
@@ -351,6 +422,27 @@ select {
   color: #bedfff;
 }
 
+#authModeRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.auth-mode {
+  border: 1px solid #3d678d;
+  background: #132e45;
+  color: #d9ecff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.auth-mode.active {
+  border-color: #71d7aa;
+  background: #1f3f5e;
+}
+
 #authForm label {
   margin-top: 8px;
 }
@@ -376,6 +468,13 @@ select {
   padding: 10px;
   font-weight: 700;
   cursor: pointer;
+}
+
+#authMessage {
+  min-height: 18px;
+  margin: 2px 0 8px;
+  color: #ffd07d;
+  font-size: 0.84rem;
 }
 
 .equip-label {
